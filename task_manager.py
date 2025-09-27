@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 import json
 import logging
+import os # <-- Adicionado
 
 # --- Constantes ---
 SCOPE = [
@@ -12,25 +13,47 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive.file"
 ]
 CREDENCIALS_FILE = "google-credentials.json"
-WORKSHEET_NAME = "Tarefas" # Nome da aba na sua planilha
-SIMILARITY_THRESHOLD = 85 # Limite de similaridade para encontrar tarefas (85%)
+WORKSHEET_NAME = "Tarefas"
+SIMILARITY_THRESHOLD = 85
 
 class TaskManager:
     """Gerencia a conexão e as operações com a planilha de Tarefas."""
 
     def __init__(self, spreadsheet_id: str):
         try:
-            creds = Credentials.from_service_account_file(CREDENCIALS_FILE, scopes=SCOPE)
+            # ======================= AQUI ESTÁ A MUDANÇA =======================
+            # Procura as credenciais na variável de ambiente primeiro
+            creds_json_str = os.getenv("GOOGLE_CREDENTIALS_JSON")
+            
+            if creds_json_str:
+                # Se encontrou, carrega a partir do texto (ideal para Railway/Heroku/etc)
+                logging.info("✅ Carregando credenciais a partir da variável de ambiente.")
+                creds_info = json.loads(creds_json_str)
+                creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
+            else:
+                # Se não, tenta carregar do arquivo (para desenvolvimento local)
+                logging.info("✅ Carregando credenciais do arquivo 'google-credentials.json'.")
+                creds = Credentials.from_service_account_file(CREDENCIALS_FILE, scopes=SCOPE)
+            # ====================================================================
+
             client = gspread.authorize(creds)
             self.spreadsheet = client.open_by_key(spreadsheet_id)
             self.worksheet = self.spreadsheet.worksheet(WORKSHEET_NAME)
             logging.info(f"✅ Conectado com sucesso à planilha '{WORKSHEET_NAME}' (ID: {spreadsheet_id})")
+        
+        except FileNotFoundError:
+            logging.critical(f"🚨 ERRO CRÍTICO: Arquivo '{CREDENCIALS_FILE}' não encontrado e a variável de ambiente 'GOOGLE_CREDENTIALS_JSON' não está definida.")
+            raise
         except gspread.exceptions.WorksheetNotFound:
             logging.critical(f"🚨 ERRO CRÍTICO: A aba '{WORKSHEET_NAME}' não foi encontrada na planilha.")
             raise
         except Exception as e:
             logging.critical(f"🚨 ERRO CRÍTICO ao conectar com o Google Sheets: {e}", exc_info=True)
             raise
+
+    #
+    # O restante do arquivo (get_all_tasks_as_json, add_tasks, etc.) permanece o mesmo
+    #
 
     def get_all_tasks_as_json(self) -> str:
         """Lê todos os registros da aba de tarefas e retorna como string JSON."""
@@ -53,7 +76,6 @@ class TaskManager:
         
         new_rows_to_add = []
         for task in tasks_from_ai:
-            # Garante que a ordem das colunas está correta
             new_rows_to_add.append([
                 task.get("Data Hora", ""),
                 task.get("Categoria", "Geral"),
@@ -86,8 +108,6 @@ class TaskManager:
             match, score = process.extractOne(identifier, task_descriptions_in_sheet)
             if match and score >= SIMILARITY_THRESHOLD:
                 row_idx = existing_tasks_map[match]["row_index"]
-                
-                # Mapeia os campos do JSON para os números das colunas
                 column_map = {"Descrição": 4, "Situação": 3, "Categoria": 2, "Data Hora": 1}
                 
                 for key, value in update.items():
@@ -113,15 +133,13 @@ class TaskManager:
 
             best_match, score = process.extractOne(row_task_desc_norm, normalized_names_from_ai)
             if score >= SIMILARITY_THRESHOLD:
-                rows_to_delete_indexes.append(i + 2) # +2 para o índice correto (1-based + cabeçalho)
-                # Remove da lista para não dar match duplo
+                rows_to_delete_indexes.append(i + 2)
                 normalized_names_from_ai.remove(best_match)
 
         if not rows_to_delete_indexes:
             logging.warning("Nenhuma tarefa correspondente encontrada para exclusão.")
             return
 
-        # Deleta as linhas em ordem reversa para não bagunçar os índices
         for row_index in sorted(list(set(rows_to_delete_indexes)), reverse=True):
             self.worksheet.delete_rows(row_index)
             logging.info(f"-> Linha {row_index} excluída.")
