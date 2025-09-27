@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  assistente-tarefas:
+    # Constrói a imagem a partir do Dockerfile no diretório atual
+    build: .
+    
+    # Nome do container para fácil identificação
+    container_name: assistente-tarefas-app
+    
+    # Mapeia a porta 8000 do container para a porta 8000 do seu servidor
+    # Se a porta 8000 já estiver em uso no servidor, você pode mudar (ex: "8081:8000")
+    ports:
+      - "8000:8000"
+      
+    # Monta os arquivos de credenciais e configuração de fora para dentro do container.
+    # Esta é a forma SEGURA de lidar com segredos, pois eles não são copiados para a imagem.
+    volumes:
+      - ./google-credentials.json:/app/google-credentials.json:ro  # 'ro' = read-only
+      - ./.env:/app/.env:ro
+      
+    # Reinicia o container automaticamente a menos que ele seja parado manualmente
+    restart: unless-stopped

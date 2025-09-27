@@ -1,0 +1,39 @@
+# Arquivos de Segredos e Configuração de Ambiente
+# NUNCA ENVIE ESTES ARQUIVOS PARA UM REPOSITÓRIO PÚBLICO!
+.env
+google-credentials.json
+
+# Ambientes Virtuais do Python
+.venv
+venv/
+env/
+ENV/
+
+# Arquivos de Cache e Bytecode do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Arquivos de Cache de IDEs e Editores de Código
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Arquivos de áudio temporários gerados pela aplicação
+temp_audio.ogg
+temp_audio.mp3
+
+# Arquivos de sistema operacional
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Relatórios de Cobertura de Testes
+.coverage
+htmlcov/

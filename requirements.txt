@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+google-generativeai
+httpx
+gspread
+google-auth-oauthlib
+google-auth-httplib2
+thefuzz
+python-levenshtein
