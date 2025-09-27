@@ -25,19 +25,19 @@ def load_config():
         with open("system_prompt.txt", "r", encoding="utf-8") as f:
             system_prompt = f.read()
     except FileNotFoundError:
-        logging.critical("🚨 ERRO CRÍTICO: Arquivo 'system_prompt.txt' não encontrado.")
-        exit()
+        logging.warning("Arquivo 'system_prompt.txt' não encontrado. Usando um prompt padrão.")
+        system_prompt = "Você é um assistente de gerenciamento de tarefas."
 
     api_keys_str = os.getenv("GOOGLE_API_KEYS")
     google_api_keys = [key.strip() for key in api_keys_str.split(',')] if api_keys_str else []
 
     config = {
         "GOOGLE_API_KEYS": google_api_keys,
-        "GEMINI_MODEL_NAME": os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash"),
+        "GEMINI_MODEL_NAME": os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest"),
         "EVOLUTION_API_URL": os.getenv("EVOLUTION_API_URL"),
         "EVOLUTION_API_KEY": os.getenv("EVOLUTION_API_KEY"),
         "EVOLUTION_INSTANCE_NAME": os.getenv("EVOLUTION_INSTANCE_NAME"),
-        "TARGET_GROUP_JID": os.getenv("TARGET_GROUP_JID"), # <-- MODIFICADO
+        "TARGET_GROUP_JID": os.getenv("TARGET_GROUP_JID"),
         "GOOGLE_SHEET_ID": os.getenv("GOOGLE_SHEET_ID"),
         "SYSTEM_PROMPT": system_prompt,
     }
@@ -46,7 +46,6 @@ def load_config():
          logging.critical(f"🚨 ERRO CRÍTICO: Nenhuma chave foi definida em GOOGLE_API_KEYS no arquivo .env")
          exit()
 
-    # <-- MODIFICADO: Valida a variável de grupo
     missing_vars = [key for key, value in config.items() if not value and key not in ["GOOGLE_API_KEYS"]]
     if missing_vars:
         logging.critical(f"🚨 ERRO CRÍTICO: Variáveis não definidas no .env ou prompt vazio: {', '.join(missing_vars)}")
@@ -71,7 +70,7 @@ except Exception as e:
 # --- Cache de Histórico de Conversa ---
 conversation_history = defaultdict(lambda: deque(maxlen=20))
 
-# --- Funções Auxiliares (sem alterações) ---
+# --- Funções Auxiliares ---
 async def enviar_resposta_whatsapp(jid: str, text: str):
     url = f"{config['EVOLUTION_API_URL']}/message/sendText/{config['EVOLUTION_INSTANCE_NAME']}"
     headers = {"Content-Type": "application/json", "apikey": config['EVOLUTION_API_KEY']}
@@ -88,9 +87,11 @@ async def enviar_resposta_whatsapp(jid: str, text: str):
             response = await client.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
         logging.info(f"Resposta enviada para {jid}: {text}")
-        # A resposta do assistente não precisa de histórico por participante, apenas o envio
+    except httpx.HTTPStatusError as e:
+        logging.error(f"🚨 Erro HTTP ao enviar resposta: {e.response.status_code}")
+        logging.error(f"   Detalhes: {e.response.text}")
     except httpx.RequestError as e:
-        logging.error(f"🚨 Erro ao enviar resposta via Evolution API: {e}")
+        logging.error(f"🚨 Erro de requisição ao enviar resposta: {e}")
 
 def convert_audio_to_mp3(ogg_path: str, mp3_path: str):
     try:
@@ -109,10 +110,8 @@ def convert_audio_to_mp3(ogg_path: str, mp3_path: str):
 async def process_message(data: dict):
     key_info = data.get("data", {}).get("key", {})
     group_jid = key_info.get("remoteJid")
-    participant_jid = key_info.get("participant") # <-- MODIFICADO: Quem enviou a mensagem no grupo
+    participant_jid = key_info.get("participant")
     msg_obj = data.get("data", {}).get("message", {})
-    
-    # <-- MODIFICADO: Usa o participante para o histórico, ou o grupo se não houver participante (ex: mensagem de serviço)
     history_jid = participant_jid or group_jid
 
     content_for_analysis = None
@@ -121,8 +120,40 @@ async def process_message(data: dict):
     # 1. Extrair conteúdo da mensagem (Áudio ou Texto)
     if "audioMessage" in msg_obj:
         prompt_instruction = "Transcreva o áudio a seguir e execute a ação solicitada na tarefa:"
-        # ... (lógica de áudio sem alteração)
-        conversation_history[history_jid].append("Usuário: [Enviou um áudio]")
+        ogg_path, mp3_path = "temp_audio.ogg", "temp_audio.mp3"
+        try:
+            # ======================= AQUI ESTÁ A CORREÇÃO =======================
+            # Lógica para baixar, converter e preparar o áudio foi restaurada
+            msg_id = data.get("data", {}).get("key", {}).get("id")
+            url = f"{config['EVOLUTION_API_URL']}/chat/getBase64FromMediaMessage/{config['EVOLUTION_INSTANCE_NAME']}"
+            payload = {"message": {"key": {"id": msg_id}}}
+            headers = {"Content-Type": "application/json", "apikey": config['EVOLUTION_API_KEY']}
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=payload, headers=headers, timeout=60)
+                response.raise_for_status()
+
+            b64_audio = response.json().get("base64")
+            with open(ogg_path, "wb") as f:
+                f.write(base64.b64decode(b64_audio))
+            
+            if convert_audio_to_mp3(ogg_path, mp3_path):
+                # Prepara o arquivo para ser enviado para a API do Gemini
+                audio_file = genai.upload_file(path=mp3_path)
+                content_for_analysis = [audio_file]
+                conversation_history[history_jid].append("Usuário: [Enviou um áudio]")
+            else:
+                await enviar_resposta_whatsapp(group_jid, "Desculpe, houve um problema ao converter seu áudio.")
+                return
+            # ====================================================================
+        except Exception as e:
+            logging.error(f"🚨 Falha ao processar áudio: {e}", exc_info=True)
+            await enviar_resposta_whatsapp(group_jid, "Desculpe, não consegui processar o áudio.")
+            return
+        finally:
+            # Garante que os arquivos temporários sejam deletados
+            if os.path.exists(ogg_path): os.remove(ogg_path)
+            if os.path.exists(mp3_path): os.remove(mp3_path)
     
     elif "conversation" in msg_obj or "extendedTextMessage" in msg_obj:
         text = msg_obj.get("conversation") or msg_obj.get("extendedTextMessage", {}).get("text", "")
@@ -132,6 +163,7 @@ async def process_message(data: dict):
             conversation_history[history_jid].append(f"Usuário ({history_jid.split('@')[0]}): {text}")
 
     if not content_for_analysis:
+        logging.info("Nenhum conteúdo para análise encontrado na mensagem.")
         return
 
     # 2. Montar Dossiê e Chamar a IA
@@ -149,17 +181,17 @@ async def process_message(data: dict):
         current_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         
         prompt_final = f"""
-            Data e Hora Atual: {current_time}
+Data e Hora Atual: {current_time}
 
-            HISTÓRICO DA CONVERSA (com o usuário {history_jid.split('@')[0]}):
-            {historico_recente}
-            ---
-            DADOS ATUAIS DA PLANILHA DE TAREFAS:
-            {dados_planilha}
-            ---
-            NOVO COMANDO DO USUÁRIO:
-            {prompt_instruction}
-            """
+HISTÓRICO DA CONVERSA (com o usuário {history_jid.split('@')[0]}):
+{historico_recente}
+---
+DADOS ATUAIS DA PLANILHA DE TAREFAS:
+{dados_planilha}
+---
+NOVO COMANDO DO USUÁRIO:
+{prompt_instruction}
+"""
         gemini_payload = [prompt_final] + content_for_analysis
         response = model.generate_content(gemini_payload)
         
@@ -177,7 +209,6 @@ async def process_message(data: dict):
         if deletions: sheets.delete_tasks(deletions)
         
         if confirmation_msg:
-            # <-- MODIFICADO: Responde para o grupo
             await enviar_resposta_whatsapp(group_jid, confirmation_msg) 
         else:
             logging.warning("IA não gerou mensagem de confirmação.")
@@ -200,21 +231,18 @@ async def webhook_receiver(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
         key = data.get("data", {}).get("key", {})
-        
-        # <-- MODIFICADO: Verifica se a mensagem veio do grupo alvo
         is_target_group = key.get("remoteJid") == config['TARGET_GROUP_JID']
         
-        if (data.get("event") == "messages.upsert" and 
-            not key.get("fromMe", False) and 
-            is_target_group):
-            
+        if (data.get("event") == "messages.upsert" and not key.get("fromMe", False) and is_target_group):
             background_tasks.add_task(process_message, data)
         
         return {"status": "received"}
-    except Exception:
+    except Exception as e:
+        logging.error(f"Erro ao processar webhook: {e}")
         return {"status": "error_parsing_request"}
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Iniciando o servidor FastAPI do Assistente de Tarefas (modo Grupo)...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    print(f"🚀 Iniciando o servidor FastAPI do Assistente de Tarefas na porta {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port)
