@@ -75,7 +75,14 @@ conversation_history = defaultdict(lambda: deque(maxlen=20))
 async def enviar_resposta_whatsapp(jid: str, text: str):
     url = f"{config['EVOLUTION_API_URL']}/message/sendText/{config['EVOLUTION_INSTANCE_NAME']}"
     headers = {"Content-Type": "application/json", "apikey": config['EVOLUTION_API_KEY']}
-    payload = {"number": jid, "options": {"delay": 1200, "presence": "composing"}, "textMessage": {"text": text}}
+    payload = {
+        "number": jid,
+        "text": text,
+        "options": {
+            "delay": 1200,
+            "presence": "composing"
+        }
+    }
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=payload, timeout=30)
