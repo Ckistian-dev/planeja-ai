@@ -116,14 +116,19 @@ async def process_message(data: dict):
 
     content_for_analysis = None
     prompt_instruction = ""
+    
+    # ======================= AQUI ESTÁ A MUDANÇA =======================
+    # A configuração da API é feita aqui, antes de qualquer coisa.
+    api_key_to_use = get_next_api_key()
+    logging.info(f"Usando chave de API terminada em: ...{api_key_to_use[-4:]}")
+    genai.configure(api_key=api_key_to_use)
+    # ====================================================================
 
     # 1. Extrair conteúdo da mensagem (Áudio ou Texto)
     if "audioMessage" in msg_obj:
         prompt_instruction = "Transcreva o áudio a seguir e execute a ação solicitada na tarefa:"
         ogg_path, mp3_path = "temp_audio.ogg", "temp_audio.mp3"
         try:
-            # ======================= AQUI ESTÁ A CORREÇÃO =======================
-            # Lógica para baixar, converter e preparar o áudio foi restaurada
             msg_id = data.get("data", {}).get("key", {}).get("id")
             url = f"{config['EVOLUTION_API_URL']}/chat/getBase64FromMediaMessage/{config['EVOLUTION_INSTANCE_NAME']}"
             payload = {"message": {"key": {"id": msg_id}}}
@@ -138,20 +143,18 @@ async def process_message(data: dict):
                 f.write(base64.b64decode(b64_audio))
             
             if convert_audio_to_mp3(ogg_path, mp3_path):
-                # Prepara o arquivo para ser enviado para a API do Gemini
+                # Agora o genai.upload_file() funcionará, pois a API já foi configurada.
                 audio_file = genai.upload_file(path=mp3_path)
                 content_for_analysis = [audio_file]
                 conversation_history[history_jid].append("Usuário: [Enviou um áudio]")
             else:
                 await enviar_resposta_whatsapp(group_jid, "Desculpe, houve um problema ao converter seu áudio.")
                 return
-            # ====================================================================
         except Exception as e:
             logging.error(f"🚨 Falha ao processar áudio: {e}", exc_info=True)
             await enviar_resposta_whatsapp(group_jid, "Desculpe, não consegui processar o áudio.")
             return
         finally:
-            # Garante que os arquivos temporários sejam deletados
             if os.path.exists(ogg_path): os.remove(ogg_path)
             if os.path.exists(mp3_path): os.remove(mp3_path)
     
@@ -168,9 +171,7 @@ async def process_message(data: dict):
 
     # 2. Montar Dossiê e Chamar a IA
     try:
-        api_key_to_use = get_next_api_key()
-        logging.info(f"Usando chave de API terminada em: ...{api_key_to_use[-4:]}")
-        genai.configure(api_key=api_key_to_use)
+        # O modelo agora é inicializado aqui, após a configuração da API
         model = genai.GenerativeModel(
             model_name=config['GEMINI_MODEL_NAME'],
             system_instruction=config['SYSTEM_PROMPT']
